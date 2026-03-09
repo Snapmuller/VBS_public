@@ -7,11 +7,10 @@ from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from io import StringIO
 
 # --- DATABASE SETUP ---
 Base = declarative_base()
-engine = create_engine('sqlite:///vbs_database.db')
+engine = create_engine('sqlite:///vbs_database.db', connect_args={"timeout": 5})
 Session = sessionmaker(bind=engine)
 
 
@@ -57,7 +56,13 @@ class Booking(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
-Base.metadata.create_all(engine)
+# Initialize database tables only once
+@st.cache_resource
+def init_db():
+    Base.metadata.create_all(engine)
+    return True
+
+init_db()
 
 
 # --- SESSION MANAGEMENT ---
@@ -123,16 +128,21 @@ def nav(page_name):
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🚗 VBS Pro")
-    if st.button("📊 Dashboard", use_container_width=True): nav('dashboard')
-    if st.button("👥 Customers", use_container_width=True): nav('customers')
-    if st.button("🚗 Vehicles", use_container_width=True): nav('vehicles')
-    if st.button("🛠️ Garages", use_container_width=True): nav('garages')
+    if st.button("📊 Dashboard", use_container_width=True):
+        nav('dashboard')
+    if st.button("👥 Customers", use_container_width=True):
+        nav('customers')
+    if st.button("🚗 Vehicles", use_container_width=True):
+        nav('vehicles')
+    if st.button("🛠️ Garages", use_container_width=True):
+        nav('garages')
     st.divider()
-    if st.button("➕ New Booking", type="primary", use_container_width=True): nav('new_booking')
+    if st.button("➕ New Booking", type="primary", use_container_width=True):
+        nav('new_booking')
 
 # --- PAGE: DASHBOARD ---
 if st.session_state.page == 'dashboard':
-    st.title("Dashboard")
+    st.title("📊 Dashboard")
     db = get_db()
 
     # Stats
@@ -190,7 +200,7 @@ if st.session_state.page == 'dashboard':
         st.info("No bookings recorded yet.")
 
     # Export to CSV
-    if bookings:
+    if bookings and data:
         csv_data = pd.DataFrame(data)
         csv_string = csv_data.to_csv(index=False)
         st.download_button(
@@ -202,7 +212,7 @@ if st.session_state.page == 'dashboard':
 
 # --- PAGE: CUSTOMERS ---
 elif st.session_state.page == 'customers':
-    st.header("Manage Customers")
+    st.header("👥 Manage Customers")
     db = get_db()
     
     with st.expander("➕ Add New Customer"):
@@ -227,32 +237,41 @@ elif st.session_state.page == 'customers':
     custs = db.query(Customer).all()
     if custs:
         cols = st.columns([2, 2, 2, 1])
-        with cols[0]: st.write("**Name**")
-        with cols[1]: st.write("**Email**")
-        with cols[2]: st.write("**Phone**")
-        with cols[3]: st.write("**Action**")
+        with cols[0]:
+            st.write("**Name**")
+        with cols[1]:
+            st.write("**Email**")
+        with cols[2]:
+            st.write("**Phone**")
+        with cols[3]:
+            st.write("**Action**")
         st.divider()
         
         for c in custs:
             cols = st.columns([2, 2, 2, 1])
-            with cols[0]: st.write(c.name)
-            with cols[1]: st.write(c.email)
-            with cols[2]: st.write(c.phone or "-")
+            with cols[0]:
+                st.write(c.name)
+            with cols[1]:
+                st.write(c.email)
+            with cols[2]:
+                st.write(c.phone or "-")
             with cols[3]:
                 if st.button("🗑️", key=f"del_cust_{c.id}", help="Delete customer"):
                     db.delete(c)
                     db.commit()
                     st.success("Customer deleted")
                     st.rerun()
+    else:
+        st.info("No customers yet. Add one to get started!")
 
 # --- PAGE: VEHICLES ---
 elif st.session_state.page == 'vehicles':
-    st.header("Manage Vehicles")
+    st.header("🚗 Manage Vehicles")
     db = get_db()
     custs = db.query(Customer).all()
     
     if not custs:
-        st.warning("Please add a customer first.")
+        st.warning("⚠️ Please add a customer first.")
     else:
         with st.expander("➕ Add New Vehicle"):
             with st.form("veh_form", clear_on_submit=True):
@@ -277,27 +296,36 @@ elif st.session_state.page == 'vehicles':
         vehs = db.query(Vehicle).all()
         if vehs:
             cols = st.columns([1.5, 2, 2, 1])
-            with cols[0]: st.write("**Reg**")
-            with cols[1]: st.write("**Model**")
-            with cols[2]: st.write("**Owner**")
-            with cols[3]: st.write("**Action**")
+            with cols[0]:
+                st.write("**Reg**")
+            with cols[1]:
+                st.write("**Model**")
+            with cols[2]:
+                st.write("**Owner**")
+            with cols[3]:
+                st.write("**Action**")
             st.divider()
             
             for v in vehs:
                 cols = st.columns([1.5, 2, 2, 1])
-                with cols[0]: st.write(v.registration)
-                with cols[1]: st.write(v.make_model)
-                with cols[2]: st.write(v.owner.name)
+                with cols[0]:
+                    st.write(v.registration)
+                with cols[1]:
+                    st.write(v.make_model)
+                with cols[2]:
+                    st.write(v.owner.name)
                 with cols[3]:
                     if st.button("🗑️", key=f"del_veh_{v.id}", help="Delete vehicle"):
                         db.delete(v)
                         db.commit()
                         st.success("Vehicle deleted")
                         st.rerun()
+        else:
+            st.info("No vehicles yet. Add one from customers list!")
 
 # --- PAGE: GARAGES ---
 elif st.session_state.page == 'garages':
-    st.header("Manage Garages")
+    st.header("🛠️ Manage Garages")
     db = get_db()
     
     with st.expander("➕ Add New Garage"):
@@ -321,32 +349,39 @@ elif st.session_state.page == 'garages':
     garages = db.query(Garage).all()
     if garages:
         cols = st.columns([2, 3, 1])
-        with cols[0]: st.write("**Name**")
-        with cols[1]: st.write("**Email**")
-        with cols[2]: st.write("**Action**")
+        with cols[0]:
+            st.write("**Name**")
+        with cols[1]:
+            st.write("**Email**")
+        with cols[2]:
+            st.write("**Action**")
         st.divider()
         
         for g in garages:
             cols = st.columns([2, 3, 1])
-            with cols[0]: st.write(g.name)
-            with cols[1]: st.write(g.email)
+            with cols[0]:
+                st.write(g.name)
+            with cols[1]:
+                st.write(g.email)
             with cols[2]:
                 if st.button("🗑️", key=f"del_gar_{g.id}", help="Delete garage"):
                     db.delete(g)
                     db.commit()
                     st.success("Garage deleted")
                     st.rerun()
+    else:
+        st.info("No garages yet. Add one to get started!")
 
 # --- PAGE: NEW BOOKING ---
 elif st.session_state.page == 'new_booking':
-    st.header("Create New Booking")
+    st.header("➕ Create New Booking")
     db = get_db()
 
     customers = db.query(Customer).all()
     garages = db.query(Garage).all()
 
     if not customers or not garages:
-        st.error("Setup required: Ensure you have at least one Customer and one Garage.")
+        st.error("⚠️ Setup required: Ensure you have at least one Customer and one Garage.")
     else:
         with st.form("booking_form"):
             col1, col2 = st.columns(2)
@@ -354,7 +389,7 @@ elif st.session_state.page == 'new_booking':
                 sel_cust = st.selectbox("Customer", customers, format_func=lambda x: x.name)
                 cust_vehs = db.query(Vehicle).filter_by(customer_id=sel_cust.id).all()
                 if not cust_vehs:
-                    st.warning("This customer has no vehicles!")
+                    st.warning("⚠️ This customer has no vehicles!")
                     sel_veh = None
                 else:
                     sel_veh = st.selectbox("Vehicle", cust_vehs, format_func=lambda x: f"{x.registration} ({x.make_model})")
@@ -404,4 +439,4 @@ elif st.session_state.page == 'new_booking':
                         st.success(f"✅ Booking saved and email sent to {sel_cust.email}")
                         st.balloons()
                     else:
-                        st.warning("Booking saved, but email failed. Check your secrets.")
+                        st.warning("⚠️ Booking saved, but email failed. Check your secrets.")
