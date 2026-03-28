@@ -55,29 +55,42 @@ class Booking(Base):
 
 Base.metadata.create_all(engine)
 
-# --- EMAIL HELPER ---
+# --- EMAIL HELPER (DIAGNOSTIC & DUAL-PORT) ---
 def send_confirmation_email(cust_email, cust_name, veh_reg, job, garage, date_obj, cost):
     try:
+        # Clean up secrets (Remove quotes/spaces)
         s_user = str(st.secrets["emails"]["smtp_user"]).replace('"', '').replace(' ', '').strip()
         s_pass = str(st.secrets["emails"]["smtp_pass"]).replace('"', '').replace(' ', '').strip()
         s_server = str(st.secrets["emails"]["smtp_server"]).replace('"', '').replace(' ', '').strip()
-        s_port = int(str(st.secrets["emails"]["smtp_port"]).replace('"', '').replace(' ', '').strip())
-
+        
         msg = MIMEMultipart()
         msg['From'] = s_user
         msg['To'] = cust_email
         msg['Subject'] = f"Booking Confirmation: {veh_reg}"
-        body = f"Hello {cust_name},\n\nYour booking for {veh_reg} is confirmed.\nJob: {job}\nGarage: {garage}\nDate: {date_obj.strftime('%d %B %Y')}\nCost: £{cost:.2f}\n\nThank you!"
+        body = f"Hello {cust_name},\n\nYour booking for {veh_reg} is confirmed.\n\nJob: {job}\nGarage: {garage}\nDate: {date_obj.strftime('%d %B %Y')}\nCost: £{cost:.2f}\n\nThank you for choosing VBS Pro!"
         msg.attach(MIMEText(body, 'plain'))
 
-        server = smtplib.SMTP(s_server, s_port, timeout=15)
-        server.starttls()
-        server.login(s_user, s_pass)
-        server.send_message(msg)
-        server.quit()
-        return True
-    except Exception as e:
-        st.error(f"Email Error: {str(e)}")
+        # TRY PORT 587 FIRST
+        try:
+            server = smtplib.SMTP(s_server, 587, timeout=10)
+            server.starttls()
+            server.login(s_user, s_pass)
+            server.send_message(msg)
+            server.quit()
+            return True
+        except Exception as e1:
+            # FALLBACK TO PORT 465
+            try:
+                server = smtplib.SMTP_SSL(s_server, 465, timeout=10)
+                server.login(s_user, s_pass)
+                server.send_message(msg)
+                server.quit()
+                return True
+            except Exception as e2:
+                st.error(f"Email failed on all ports. Port 587: {e1} | Port 465: {e2}")
+                return False
+    except Exception as e_final:
+        st.error(f"General Email Error: {e_final}")
         return False
 
 # --- UI CONFIG & CSS ---
@@ -89,6 +102,9 @@ st.markdown("""
         border: 1px solid rgba(128, 128, 128, 0.3) !important;
         padding: 20px !important;
         border-radius: 10px !important;
+    }
+    div[data-testid="metric-container"] label, div[data-testid="metric-container"] [data-testid="stMetricValue"] {
+        color: inherit !important;
     }
     .main-header { font-size: 28px; font-weight: bold; margin-bottom: 20px; }
     .section-header { font-size: 18px; font-weight: bold; color: #ff4b4b; margin-top: 10px; }
@@ -124,131 +140,113 @@ if st.session_state.page == 'dashboard':
     results = query.order_by(Booking.date.desc()).all()
     data = [{"Date": b.date.strftime("%d %b %Y"), "Customer": b.customer.name, "Vehicle": b.vehicle.registration, "Garage": b.garage.name, "Job": b.job_title, "Cost": f"£{b.cost:.2f}", "Status": b.status} for b in results]
     if data: st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
-    else: st.info("No bookings yet.")
+    else: st.info("No bookings recorded yet.")
 
-# --- MEGA FORM: NEW BOOKING ---
+# --- MEGA FORM ---
 elif st.session_state.page == 'new_booking':
-    st.markdown('<div class="main-header">New Unified Booking Form</div>', unsafe_allow_html=True)
-    st.info("Fill in the fields below. You can pick existing records OR type in new ones to create them automatically.")
-    
+    st.markdown('<div class="main-header">New Unified Booking</div>', unsafe_allow_html=True)
     existing_custs = db.query(Customer).all()
     existing_gars = db.query(Garage).all()
 
-    with st.form("mega_booking_form"):
-        # ROW 1: CUSTOMER & VEHICLE
+    with st.form("mega_form"):
         col1, col2 = st.columns(2)
         with col1:
             st.markdown('<p class="section-header">1. Customer Details</p>', unsafe_allow_html=True)
-            cust_choice = st.selectbox("Pick Existing Customer", ["-- New Customer --"] + [c.name for c in existing_custs])
-            new_cust_name = st.text_input("New Customer Name (if not in list)")
-            new_cust_email = st.text_input("New Customer Email")
-            new_cust_phone = st.text_input("New Customer Phone")
-
+            cust_choice = st.selectbox("Existing Customer", ["-- New Customer --"] + [c.name for c in existing_custs])
+            n_cust_name = st.text_input("New Name")
+            n_cust_email = st.text_input("New Email")
+            n_cust_phone = st.text_input("New Phone")
         with col2:
             st.markdown('<p class="section-header">2. Vehicle Details</p>', unsafe_allow_html=True)
-            # Find vehicles for existing customer if selected
             current_vehs = []
             if cust_choice != "-- New Customer --":
                 c_obj = db.query(Customer).filter_by(name=cust_choice).first()
                 current_vehs = [v.registration for v in c_obj.vehicles]
-            
-            veh_choice = st.selectbox("Pick Existing Vehicle", ["-- New Vehicle --"] + current_vehs)
-            new_veh_reg = st.text_input("New Vehicle Reg (e.g. MC15 PGU)").upper()
-            new_veh_model = st.text_input("New Vehicle Make/Model")
+            veh_choice = st.selectbox("Existing Vehicle", ["-- New Vehicle --"] + current_vehs)
+            n_veh_reg = st.text_input("New Reg").upper()
+            n_veh_mod = st.text_input("New Make/Model")
 
         st.divider()
-
-        # ROW 2: GARAGE & BOOKING
         col3, col4 = st.columns(2)
         with col3:
             st.markdown('<p class="section-header">3. Garage Details</p>', unsafe_allow_html=True)
-            gar_choice = st.selectbox("Pick Existing Garage", ["-- New Garage --"] + [g.name for g in existing_gars])
-            new_gar_name = st.text_input("New Garage Name")
-            new_gar_email = st.text_input("New Garage Email")
-
+            gar_choice = st.selectbox("Existing Garage", ["-- New Garage --"] + [g.name for g in existing_gars])
+            n_gar_name = st.text_input("New Garage Name")
+            n_gar_email = st.text_input("New Garage Email")
         with col4:
-            st.markdown('<p class="section-header">4. Booking Details</p>', unsafe_allow_html=True)
-            job = st.text_input("Job Title (e.g. Full Service)")
+            st.markdown('<p class="section-header">4. Job Details</p>', unsafe_allow_html=True)
+            job = st.text_input("Job Title")
             dt = st.date_input("Service Date")
-            cost = st.number_input("Est. Cost (£)", min_value=0.0)
-            stat = st.selectbox("Initial Status", ["Confirmed", "In Progress", "Completed"])
-
-        desc = st.text_area("Work Description / Internal Notes")
-
-        submit = st.form_submit_button("CREATE EVERYTHING & SEND EMAIL", type="primary", use_container_width=True)
+            cost = st.number_input("Cost (£)", min_value=0.0)
+        
+        desc = st.text_area("Notes")
+        stat = st.selectbox("Status", ["Confirmed", "In Progress", "Completed"])
+        submit = st.form_submit_button("SAVE & SEND EMAIL", type="primary", use_container_width=True)
 
     if submit:
         try:
-            # 1. Resolve Customer
+            # 1. SMART CHECK: CUSTOMER
             if cust_choice == "-- New Customer --":
-                if not new_cust_name or not new_cust_email:
-                    st.error("Please provide a name and email for the new customer."); st.stop()
-                final_cust = Customer(name=new_cust_name, email=new_cust_email, phone=new_cust_phone)
-                db.add(final_cust); db.flush() # Get ID without committing yet
+                final_cust = db.query(Customer).filter_by(email=n_cust_email).first()
+                if not final_cust:
+                    final_cust = Customer(name=n_cust_name, email=n_cust_email, phone=n_cust_phone)
+                    db.add(final_cust); db.flush()
             else:
                 final_cust = db.query(Customer).filter_by(name=cust_choice).first()
 
-            # 2. Resolve Vehicle
+            # 2. SMART CHECK: VEHICLE
             if veh_choice == "-- New Vehicle --":
-                if not new_veh_reg or not new_veh_model:
-                    st.error("Please provide registration and model for the new vehicle."); st.stop()
-                final_veh = Vehicle(registration=new_veh_reg, make_model=new_veh_model, owner=final_cust)
-                db.add(final_veh); db.flush()
+                final_veh = db.query(Vehicle).filter_by(registration=n_veh_reg).first()
+                if not final_veh:
+                    final_veh = Vehicle(registration=n_veh_reg, make_model=n_veh_mod, owner=final_cust)
+                    db.add(final_veh); db.flush()
             else:
                 final_veh = db.query(Vehicle).filter_by(registration=veh_choice).first()
 
-            # 3. Resolve Garage
+            # 3. SMART CHECK: GARAGE
             if gar_choice == "-- New Garage --":
-                if not new_gar_name or not new_gar_email:
-                    st.error("Please provide garage name and email."); st.stop()
-                final_gar = Garage(name=new_gar_name, email=new_gar_email)
-                db.add(final_gar); db.flush()
+                final_gar = db.query(Garage).filter_by(name=n_gar_name).first()
+                if not final_gar:
+                    final_gar = Garage(name=n_gar_name, email=n_gar_email)
+                    db.add(final_gar); db.flush()
             else:
                 final_gar = db.query(Garage).filter_by(name=gar_choice).first()
 
-            # 4. Create Booking
-            new_b = Booking(
-                customer=final_cust, vehicle=final_veh, garage=final_gar,
-                job_title=job, description=desc, 
-                date=datetime.combine(dt, datetime.min.time()),
-                cost=cost, status=stat
-            )
-            db.add(new_b)
-            db.commit()
+            # 4. SAVE BOOKING
+            new_b = Booking(customer=final_cust, vehicle=final_veh, garage=final_gar, job_title=job, description=desc, date=datetime.combine(dt, datetime.min.time()), cost=cost, status=stat)
+            db.add(new_b); db.commit()
 
-            # 5. Email
-            with st.spinner("Sending email..."):
+            # 5. EMAIL
+            with st.spinner("Processing email..."):
                 if send_confirmation_email(final_cust.email, final_cust.name, final_veh.registration, job, final_gar.name, dt, cost):
-                    st.success("SUCCESS: Customer, Vehicle, Garage, and Booking saved. Email sent!")
+                    st.success("All data saved and email sent!")
                 else:
-                    st.warning("Booking saved, but email failed. Check secrets.")
-            
+                    st.warning("Booking saved, but email failed. Check errors above.")
             st.balloons(); nav('dashboard'); st.rerun()
 
         except Exception as e:
-            db.rollback()
-            st.error(f"Database Error: {e}")
+            db.rollback(); st.error(f"Error: {e}")
 
-# (Other pages like Customers, Vehicles, Garages remain as they are for managing existing data)
+# (Management pages)
 elif st.session_state.page == 'customers':
-    st.header("Existing Customers")
+    st.header("Manage Customers")
     for c in db.query(Customer).all():
-        col1, col2 = st.columns([4,1])
-        col1.write(f"**{c.name}** - {c.email}")
-        if col2.button("Delete", key=f"d_c_{c.id}"): db.delete(c); db.commit(); st.rerun()
+        c1, c2 = st.columns([5,1])
+        c1.write(f"**{c.name}** ({c.email})")
+        if c2.button("Delete", key=f"d_c_{c.id}"): db.delete(c); db.commit(); st.rerun()
 
 elif st.session_state.page == 'vehicles':
-    st.header("Existing Vehicles")
+    st.header("Manage Vehicles")
     for v in db.query(Vehicle).all():
-        col1, col2 = st.columns([4,1])
-        col1.write(f"**{v.registration}** ({v.make_model}) - Owner: {v.owner.name}")
-        if col2.button("Delete", key=f"d_v_{v.id}"): db.delete(v); db.commit(); st.rerun()
+        c1, c2 = st.columns([5,1])
+        c1.write(f"**{v.registration}** - {v.owner.name}")
+        if c2.button("Delete", key=f"d_v_{v.id}"): db.delete(v); db.commit(); st.rerun()
 
 elif st.session_state.page == 'garages':
-    st.header("Existing Garages")
+    st.header("Manage Garages")
     for g in db.query(Garage).all():
-        col1, col2 = st.columns([4,1])
-        col1.write(f"**{g.name}** - {g.email}")
-        if col2.button("Delete", key=f"d_g_{g.id}"): db.delete(g); db.commit(); st.rerun()
+        c1, c2 = st.columns([5,1])
+        c1.write(f"**{g.name}**")
+        if c2.button("Delete", key=f"d_g_{g.id}"): db.delete(g); db.commit(); st.rerun()
 
 db.close()
