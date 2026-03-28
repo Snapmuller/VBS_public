@@ -13,7 +13,6 @@ Base = declarative_base()
 engine = create_engine('sqlite:///vbs_database.db', connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-
 class Customer(Base):
     __tablename__ = 'customers'
     id = Column(Integer, primary_key=True)
@@ -22,7 +21,6 @@ class Customer(Base):
     phone = Column(String)
     vehicles = relationship("Vehicle", back_populates="owner", cascade="all, delete-orphan")
     bookings = relationship("Booking", back_populates="customer", cascade="all, delete-orphan")
-
 
 class Vehicle(Base):
     __tablename__ = 'vehicles'
@@ -33,14 +31,12 @@ class Vehicle(Base):
     owner = relationship("Customer", back_populates="vehicles")
     bookings = relationship("Booking", back_populates="vehicle", cascade="all, delete-orphan")
 
-
 class Garage(Base):
     __tablename__ = 'garages'
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True, nullable=False)
     email = Column(String, unique=True, nullable=False)
     bookings = relationship("Booking", back_populates="garage")
-
 
 class Booking(Base):
     __tablename__ = 'bookings'
@@ -53,39 +49,40 @@ class Booking(Base):
     date = Column(DateTime, nullable=False)
     cost = Column(Float, nullable=False)
     status = Column(String, default="Confirmed")
-
     customer = relationship("Customer", back_populates="bookings")
     vehicle = relationship("Vehicle", back_populates="bookings")
     garage = relationship("Garage", back_populates="bookings")
 
-
 Base.metadata.create_all(engine)
 
-
-# --- HELPER: GET DB SESSION ---
 def get_db():
-    db = SessionLocal()
-    try:
-        return db
-    finally:
-        pass  # We close manually in streamlit pages to avoid detached errors
-
+    return SessionLocal()
 
 # --- EMAIL HELPER ---
 def send_confirmation_email(cust_email, cust_name, veh_reg, job, garage, date_obj, cost):
     try:
-        # These must be set in Railway Variables
-        s_user = st.secrets["emails"]["smtp_user"]
-        s_pass = st.secrets["emails"]["smtp_pass"]
-        s_server = st.secrets["emails"]["smtp_server"]
-        s_port = st.secrets["emails"]["smtp_port"]
+        # Fetching secrets and ensuring no accidental quotes or spaces
+        s_user = str(st.secrets["emails"]["smtp_user"]).strip().replace('"', '')
+        s_pass = str(st.secrets["emails"]["smtp_pass"]).strip().replace('"', '')
+        s_server = str(st.secrets["emails"]["smtp_server"]).strip().replace('"', '')
+        s_port = int(str(st.secrets["emails"]["smtp_port"]).strip().replace('"', ''))
 
         msg = MIMEMultipart()
         msg['From'] = s_user
         msg['To'] = cust_email
         msg['Subject'] = f"Booking Confirmation: {veh_reg}"
 
-        body = f"Hello {cust_name},\n\nYour booking for {veh_reg} is confirmed.\nJob: {job}\nGarage: {garage}\nDate: {date_obj}\nCost: £{cost:.2f}"
+        body = f"""Hello {cust_name},
+
+Your booking for {veh_reg} is confirmed.
+
+Job: {job}
+Garage: {garage}
+Date: {date_obj.strftime('%d %B %Y')}
+Estimated Cost: £{cost:.2f}
+
+Thank you!"""
+        
         msg.attach(MIMEText(body, 'plain'))
 
         server = smtplib.SMTP(s_server, s_port)
@@ -95,24 +92,26 @@ def send_confirmation_email(cust_email, cust_name, veh_reg, job, garage, date_ob
         server.quit()
         return True
     except Exception as e:
-        st.error(f"Email Error: {e}")
+        st.error(f"Email Error Trace: {e}")
         return False
 
-
-# --- UI CONFIG ---
+# --- UI CONFIG & CSS FIX ---
 st.set_page_config(layout="wide", page_title="VBS Pro")
 st.markdown("""
     <style>
-    .stMetric { background-color: #ffffff; border: 1px solid #e6e9ef; padding: 15px; border-radius: 10px; }
+    /* Fixed: Removed white background to support Dark Mode */
+    [data-testid="stMetric"] {
+        background-color: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(128, 128, 128, 0.2);
+        padding: 15px;
+        border-radius: 10px;
+    }
     .main-header { font-size: 28px; font-weight: bold; margin-bottom: 20px; }
     </style>
 """, unsafe_allow_html=True)
 
 if 'page' not in st.session_state: st.session_state.page = 'dashboard'
-
-
 def nav(p): st.session_state.page = p
-
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -124,12 +123,10 @@ with st.sidebar:
     st.divider()
     if st.button("➕ New Booking", type="primary", use_container_width=True): nav('new_booking')
 
-# --- PAGE: DASHBOARD ---
+# --- DASHBOARD ---
 if st.session_state.page == 'dashboard':
     st.markdown('<div class="main-header">Dashboard</div>', unsafe_allow_html=True)
     db = get_db()
-
-    # Stats row
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Bookings", db.query(Booking).count())
     c2.metric("Customers", db.query(Customer).count())
@@ -138,23 +135,18 @@ if st.session_state.page == 'dashboard':
 
     st.write("### Recent Bookings")
     col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        search = st.text_input("🔍 Search Customer/Reg")
-    with col_b:
-        status = st.selectbox("Status", ["All", "Confirmed", "In Progress", "Completed", "Cancelled"])
-    with col_c:
-        d_range = st.date_input("Date Range", value=[date(2023, 1, 1), date(2026, 12, 31)])
+    with col_a: search = st.text_input("🔍 Search Customer/Reg")
+    with col_b: status = st.selectbox("Status", ["All", "Confirmed", "In Progress", "Completed", "Cancelled"])
+    with col_c: d_range = st.date_input("Date Range", value=[date(2023, 1, 1), date(2026, 12, 31)])
 
-    query = db.query(Booking).options(joinedload(Booking.customer), joinedload(Booking.vehicle),
-                                      joinedload(Booking.garage))
+    query = db.query(Booking).options(joinedload(Booking.customer), joinedload(Booking.vehicle), joinedload(Booking.garage))
     if status != "All": query = query.filter(Booking.status == status)
     if len(d_range) == 2: query = query.filter(Booking.date.between(d_range[0], d_range[1]))
 
     results = query.order_by(Booking.date.desc()).all()
-
     data = []
     for b in results:
-        if search.lower() in b.customer.name.lower() or search.lower() in b.vehicle.registration.lower():
+        if not search or search.lower() in b.customer.name.lower() or search.lower() in b.vehicle.registration.lower():
             data.append({
                 "Date": b.date.strftime("%d %b %Y"),
                 "Customer": b.customer.name,
@@ -165,13 +157,11 @@ if st.session_state.page == 'dashboard':
                 "Status": b.status
             })
 
-    if data:
-        st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
-    else:
-        st.info("No bookings found matching filters.")
+    if data: st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
+    else: st.info("No bookings match filters.")
     db.close()
 
-# --- PAGE: CUSTOMERS ---
+# --- CUSTOMERS ---
 elif st.session_state.page == 'customers':
     st.header("Manage Customers")
     db = get_db()
@@ -181,55 +171,44 @@ elif st.session_state.page == 'customers':
             email = st.text_input("Email")
             phone = st.text_input("Phone")
             if st.form_submit_button("Save"):
-                if db.query(Customer).filter_by(email=email).first():
-                    st.error("Email exists")
+                if db.query(Customer).filter_by(email=email).first(): st.error("Email exists")
                 else:
                     db.add(Customer(name=name, email=email, phone=phone))
-                    db.commit()
-                    st.success("Added!");
-                    st.rerun()
+                    db.commit(); st.success("Added!"); st.rerun()
 
     for c in db.query(Customer).all():
         col1, col2, col3 = st.columns([3, 3, 1])
         col1.write(f"**{c.name}** ({c.email})")
         col2.write(f"📞 {c.phone}")
         if col3.button("🗑️", key=f"del_c_{c.id}"):
-            db.delete(c);
-            db.commit();
-            st.rerun()
+            db.delete(c); db.commit(); st.rerun()
     db.close()
 
-# --- PAGE: VEHICLES ---
+# --- VEHICLES ---
 elif st.session_state.page == 'vehicles':
     st.header("Manage Vehicles")
     db = get_db()
     custs = db.query(Customer).all()
-    if not custs:
-        st.warning("Add a customer first")
+    if not custs: st.warning("Add a customer first")
     else:
         with st.expander("➕ Add New Vehicle"):
             with st.form("v_form", clear_on_submit=True):
                 reg = st.text_input("Registration").upper()
                 mod = st.text_input("Make/Model")
-                owner_id = st.selectbox("Owner", [c.id for c in custs],
-                                        format_func=lambda x: db.query(Customer).get(x).name)
+                owner_id = st.selectbox("Owner", [c.id for c in custs], format_func=lambda x: db.query(Customer).get(x).name)
                 if st.form_submit_button("Save"):
                     db.add(Vehicle(registration=reg, make_model=mod, customer_id=owner_id))
-                    db.commit();
-                    st.success("Added!");
-                    st.rerun()
+                    db.commit(); st.success("Added!"); st.rerun()
 
     for v in db.query(Vehicle).options(joinedload(Vehicle.owner)).all():
         c1, c2, c3 = st.columns([2, 2, 1])
         c1.write(f"**{v.registration}** - {v.make_model}")
         c2.write(f"👤 {v.owner.name}")
         if c3.button("🗑️", key=f"del_v_{v.id}"):
-            db.delete(v);
-            db.commit();
-            st.rerun()
+            db.delete(v); db.commit(); st.rerun()
     db.close()
 
-# --- PAGE: GARAGES ---
+# --- GARAGES ---
 elif st.session_state.page == 'garages':
     st.header("Manage Garages")
     db = get_db()
@@ -239,38 +218,31 @@ elif st.session_state.page == 'garages':
             email = st.text_input("Email")
             if st.form_submit_button("Save"):
                 db.add(Garage(name=name, email=email))
-                db.commit();
-                st.success("Added!");
-                st.rerun()
+                db.commit(); st.success("Added!"); st.rerun()
 
     for g in db.query(Garage).all():
         c1, c2, c3 = st.columns([2, 2, 1])
         c1.write(f"**{g.name}**")
         c2.write(g.email)
         if c3.button("🗑️", key=f"del_g_{g.id}"):
-            db.delete(g);
-            db.commit();
-            st.rerun()
+            db.delete(g); db.commit(); st.rerun()
     db.close()
 
-# --- PAGE: NEW BOOKING ---
+# --- NEW BOOKING ---
 elif st.session_state.page == 'new_booking':
     st.header("New Booking")
     db = get_db()
     custs = db.query(Customer).all()
     gars = db.query(Garage).all()
 
-    if not custs or not gars:
-        st.error("Add Customers and Garages first!")
+    if not custs or not gars: st.error("Add Customers and Garages first!")
     else:
         with st.form("b_form"):
             col1, col2 = st.columns(2)
             with col1:
                 sel_cust = st.selectbox("Customer", custs, format_func=lambda x: x.name)
-                # Important: re-query vehicles for selected customer to ensure fresh list
                 vehs = db.query(Vehicle).filter_by(customer_id=sel_cust.id).all()
-                sel_veh = st.selectbox("Vehicle", vehs,
-                                       format_func=lambda x: f"{x.registration} ({x.make_model})") if vehs else None
+                sel_veh = st.selectbox("Vehicle", vehs, format_func=lambda x: f"{x.registration} ({x.make_model})") if vehs else None
                 sel_gar = st.selectbox("Garage", gars, format_func=lambda x: x.name)
             with col2:
                 job = st.text_input("Job Title")
@@ -281,21 +253,15 @@ elif st.session_state.page == 'new_booking':
             stat = st.selectbox("Status", ["Confirmed", "In Progress", "Completed", "Cancelled"])
 
             if st.form_submit_button("Create & Send Email"):
-                if not sel_veh:
-                    st.error("Customer has no vehicles!")
+                if not sel_veh: st.error("Customer has no vehicles!")
                 else:
                     new_b = Booking(customer_id=sel_cust.id, vehicle_id=sel_veh.id, garage_id=sel_gar.id,
                                     job_title=job, description=desc, date=datetime.combine(dt, datetime.min.time()),
                                     cost=cost, status=stat)
-                    db.add(new_b);
-                    db.commit()
-
+                    db.add(new_b); db.commit()
                     with st.spinner("Sending email..."):
-                        if send_confirmation_email(sel_cust.email, sel_cust.name, sel_veh.registration, job,
-                                                   sel_gar.name, dt, cost):
-                            st.success("Booking created and email sent!")
-                        else:
-                            st.warning("Booking created, but email failed.")
-                    nav('dashboard');
-                    st.rerun()
+                        if send_confirmation_email(sel_cust.email, sel_cust.name, sel_veh.registration, job, sel_gar.name, dt, cost):
+                            st.success("Booking saved and email sent!")
+                        else: st.warning("Booking saved, but email failed. Check Railway variables.")
+                    nav('dashboard'); st.rerun()
     db.close()
