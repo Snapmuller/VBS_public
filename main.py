@@ -8,6 +8,9 @@ from datetime import datetime, date
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+# 1. MUST BE THE VERY FIRST STREAMLIT COMMAND
+st.set_page_config(layout="wide", page_title="VBS Pro")
+
 # --- DATABASE SETUP ---
 Base = declarative_base()
 engine = create_engine('sqlite:///vbs_database.db', connect_args={"check_same_thread": False})
@@ -55,10 +58,9 @@ class Booking(Base):
 
 Base.metadata.create_all(engine)
 
-# --- IMPROVED EMAIL HELPER (FOR RAILWAY) ---
+# --- EMAIL HELPER ---
 def send_confirmation_email(cust_email, cust_name, veh_reg, job, garage, date_obj, cost):
     try:
-        # Pull and clean secrets
         s_user = str(st.secrets["emails"]["smtp_user"]).replace('"', '').replace(' ', '').strip()
         s_pass = str(st.secrets["emails"]["smtp_pass"]).replace('"', '').replace(' ', '').strip()
         s_server = str(st.secrets["emails"]["smtp_server"]).replace('"', '').replace(' ', '').strip()
@@ -67,57 +69,27 @@ def send_confirmation_email(cust_email, cust_name, veh_reg, job, garage, date_ob
         msg['From'] = f"VBS Pro <{s_user}>"
         msg['To'] = cust_email
         msg['Subject'] = f"Booking Confirmation: {veh_reg}"
-        
-        body = f"Hello {cust_name},\n\nYour booking for {veh_reg} is confirmed.\n\nDetails:\n- Job: {job}\n- Garage: {garage}\n- Date: {date_obj}\n- Cost: £{cost:.2f}\n\nThank you!"
+        body = f"Hello {cust_name},\n\nYour booking for {veh_reg} is confirmed.\n\nJob: {job}\nGarage: {garage}\nDate: {date_obj}\nCost: £{cost:.2f}\n\nThank you!"
         msg.attach(MIMEText(body, 'plain'))
 
-        # TRY PORT 465 (SSL) - This is usually MORE RELIABLE on Railway/Cloud
+        # Try SSL (465)
         try:
             with smtplib.SMTP_SSL(s_server, 465, timeout=15) as server:
                 server.login(s_user, s_pass)
                 server.send_message(msg)
             return True
-        except Exception as ssl_err:
-            # FALLBACK TO PORT 587 (TLS)
-            try:
-                with smtplib.SMTP(s_server, 587, timeout=15) as server:
-                    server.starttls()
-                    server.login(s_user, s_pass)
-                    server.send_message(msg)
-                return True
-            except Exception as tls_err:
-                st.error(f"❌ Email Failed. SSL Error: {ssl_err} | TLS Error: {tls_err}")
-                return False
+        except:
+            # Fallback TLS (587)
+            with smtplib.SMTP(s_server, 587, timeout=15) as server:
+                server.starttls()
+                server.login(s_user, s_pass)
+                server.send_message(msg)
+            return True
     except Exception as e:
-        st.error(f"❌ Secrets Error: {e}. Check your Railway Variables.")
+        st.error(f"Email Failed: {e}")
         return False
 
-# --- SIDEBAR WITH DIAGNOSTIC TOOL ---
-with st.sidebar:
-    st.title("🚗 VBS Pro")
-    if st.button("📊 Dashboard", use_container_width=True): nav('dashboard')
-    if st.button("👥 Customers", use_container_width=True): nav('customers')
-    if st.button("🚗 Vehicles", use_container_width=True): nav('vehicles')
-    if st.button("🛠️ Garages", use_container_width=True): nav('garages')
-    st.divider()
-    if st.button("➕ New Booking", type="primary", use_container_width=True): nav('new_booking')
-    
-    # NEW: EMAIL TESTER
-    st.divider()
-    st.write("**Diagnostics**")
-    if st.button("📧 Test Email Config"):
-        with st.spinner("Testing connection..."):
-            test_res = send_confirmation_email(
-                st.secrets["emails"]["smtp_user"], 
-                "Admin", "TEST-REG", "System Test", "Test Garage", "Today", 0.0
-            )
-            if test_res:
-                st.success("Test email sent to yourself!")
-            else:
-                st.error("Test failed. See red box above.")
-
-# --- UI CONFIG & CSS ---
-st.set_page_config(layout="wide", page_title="VBS Pro")
+# --- CSS STYLING ---
 st.markdown("""
     <style>
     div[data-testid="metric-container"], .stMetric {
@@ -134,8 +106,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# --- NAVIGATION ---
 if 'page' not in st.session_state: st.session_state.page = 'dashboard'
 def nav(p): st.session_state.page = p
+
+db = SessionLocal()
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -146,10 +121,14 @@ with st.sidebar:
     if st.button("🛠️ Garages", use_container_width=True): nav('garages')
     st.divider()
     if st.button("➕ New Booking", type="primary", use_container_width=True): nav('new_booking')
+    
+    st.divider()
+    if st.button("📧 Test Email Config"):
+        st.info("Sending test to admin...")
+        if send_confirmation_email(st.secrets["emails"]["smtp_user"], "Admin", "TEST-REG", "Test", "Test Garage", "Today", 0):
+            st.success("Test Sent!")
 
-db = SessionLocal()
-
-# --- DASHBOARD ---
+# --- PAGES ---
 if st.session_state.page == 'dashboard':
     st.markdown('<div class="main-header">Dashboard</div>', unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
@@ -157,119 +136,86 @@ if st.session_state.page == 'dashboard':
     c2.metric("Customers", db.query(Customer).count())
     c3.metric("Vehicles", db.query(Vehicle).count())
     c4.metric("Garages", db.query(Garage).count())
-
+    
     st.write("### Recent Bookings")
     query = db.query(Booking).options(joinedload(Booking.customer), joinedload(Booking.vehicle), joinedload(Booking.garage))
     results = query.order_by(Booking.date.desc()).all()
     data = [{"Date": b.date.strftime("%d %b %Y"), "Customer": b.customer.name, "Vehicle": b.vehicle.registration, "Garage": b.garage.name, "Job": b.job_title, "Cost": f"£{b.cost:.2f}", "Status": b.status} for b in results]
     if data: st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
-    else: st.info("No bookings recorded yet.")
 
-# --- MEGA FORM ---
 elif st.session_state.page == 'new_booking':
-    st.markdown('<div class="main-header">New Unified Booking</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">New Booking</div>', unsafe_allow_html=True)
     existing_custs = db.query(Customer).all()
     existing_gars = db.query(Garage).all()
 
     with st.form("mega_form"):
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown('<p class="section-header">1. Customer Details</p>', unsafe_allow_html=True)
-            cust_choice = st.selectbox("Existing Customer", ["-- New Customer --"] + [c.name for c in existing_custs])
-            n_cust_name = st.text_input("New Name")
-            n_cust_email = st.text_input("New Email")
-            n_cust_phone = st.text_input("New Phone")
+            st.markdown('<p class="section-header">1. Customer</p>', unsafe_allow_html=True)
+            cust_choice = st.selectbox("Existing", ["-- New --"] + [c.name for c in existing_custs])
+            n_name = st.text_input("New Name")
+            n_email = st.text_input("New Email")
         with col2:
-            st.markdown('<p class="section-header">2. Vehicle Details</p>', unsafe_allow_html=True)
-            current_vehs = []
-            if cust_choice != "-- New Customer --":
-                c_obj = db.query(Customer).filter_by(name=cust_choice).first()
-                current_vehs = [v.registration for v in c_obj.vehicles]
-            veh_choice = st.selectbox("Existing Vehicle", ["-- New Vehicle --"] + current_vehs)
-            n_veh_reg = st.text_input("New Reg").upper()
-            n_veh_mod = st.text_input("New Make/Model")
+            st.markdown('<p class="section-header">2. Vehicle</p>', unsafe_allow_html=True)
+            veh_choice = st.selectbox("Existing Vehicle", ["-- New --"]) # Logic simplified for Mega Form
+            n_reg = st.text_input("Reg").upper()
+            n_mod = st.text_input("Model")
 
         st.divider()
         col3, col4 = st.columns(2)
         with col3:
-            st.markdown('<p class="section-header">3. Garage Details</p>', unsafe_allow_html=True)
-            gar_choice = st.selectbox("Existing Garage", ["-- New Garage --"] + [g.name for g in existing_gars])
-            n_gar_name = st.text_input("New Garage Name")
-            n_gar_email = st.text_input("New Garage Email")
+            st.markdown('<p class="section-header">3. Garage</p>', unsafe_allow_html=True)
+            gar_choice = st.selectbox("Existing Garage", ["-- New --"] + [g.name for g in existing_gars])
+            n_g_name = st.text_input("Garage Name")
+            n_g_email = st.text_input("Garage Email")
         with col4:
-            st.markdown('<p class="section-header">4. Job Details</p>', unsafe_allow_html=True)
+            st.markdown('<p class="section-header">4. Job</p>', unsafe_allow_html=True)
             job = st.text_input("Job Title")
-            dt = st.date_input("Service Date")
+            dt = st.date_input("Date")
             cost = st.number_input("Cost (£)", min_value=0.0)
         
-        desc = st.text_area("Notes")
-        stat = st.selectbox("Status", ["Confirmed", "In Progress", "Completed"])
         submit = st.form_submit_button("SAVE & SEND EMAIL", type="primary", use_container_width=True)
 
     if submit:
         try:
-            # 1. SMART CHECK: CUSTOMER
-            if cust_choice == "-- New Customer --":
-                final_cust = db.query(Customer).filter_by(email=n_cust_email).first()
-                if not final_cust:
-                    final_cust = Customer(name=n_cust_name, email=n_cust_email, phone=n_cust_phone)
-                    db.add(final_cust); db.flush()
+            # Customer
+            if cust_choice == "-- New --":
+                final_cust = db.query(Customer).filter_by(email=n_email).first() or Customer(name=n_name, email=n_email)
+                db.add(final_cust); db.flush()
             else:
                 final_cust = db.query(Customer).filter_by(name=cust_choice).first()
-
-            # 2. SMART CHECK: VEHICLE
-            if veh_choice == "-- New Vehicle --":
-                final_veh = db.query(Vehicle).filter_by(registration=n_veh_reg).first()
-                if not final_veh:
-                    final_veh = Vehicle(registration=n_veh_reg, make_model=n_veh_mod, owner=final_cust)
-                    db.add(final_veh); db.flush()
-            else:
-                final_veh = db.query(Vehicle).filter_by(registration=veh_choice).first()
-
-            # 3. SMART CHECK: GARAGE
-            if gar_choice == "-- New Garage --":
-                final_gar = db.query(Garage).filter_by(name=n_gar_name).first()
-                if not final_gar:
-                    final_gar = Garage(name=n_gar_name, email=n_gar_email)
-                    db.add(final_gar); db.flush()
+            # Vehicle
+            final_veh = db.query(Vehicle).filter_by(registration=n_reg).first() or Vehicle(registration=n_reg, make_model=n_mod, owner=final_cust)
+            db.add(final_veh); db.flush()
+            # Garage
+            if gar_choice == "-- New --":
+                final_gar = db.query(Garage).filter_by(name=n_g_name).first() or Garage(name=n_g_name, email=n_g_email)
+                db.add(final_gar); db.flush()
             else:
                 final_gar = db.query(Garage).filter_by(name=gar_choice).first()
-
-            # 4. SAVE BOOKING
-            new_b = Booking(customer=final_cust, vehicle=final_veh, garage=final_gar, job_title=job, description=desc, date=datetime.combine(dt, datetime.min.time()), cost=cost, status=stat)
+            # Booking
+            new_b = Booking(customer=final_cust, vehicle=final_veh, garage=final_gar, job_title=job, date=datetime.combine(dt, datetime.min.time()), cost=cost)
             db.add(new_b); db.commit()
-
-            # 5. EMAIL
-            with st.spinner("Processing email..."):
-                if send_confirmation_email(final_cust.email, final_cust.name, final_veh.registration, job, final_gar.name, dt, cost):
-                    st.success("All data saved and email sent!")
-                else:
-                    st.warning("Booking saved, but email failed. Check errors above.")
-            st.balloons(); nav('dashboard'); st.rerun()
-
+            
+            send_confirmation_email(final_cust.email, final_cust.name, final_veh.registration, job, final_gar.name, dt, cost)
+            st.success("Saved!"); nav('dashboard'); st.rerun()
         except Exception as e:
             db.rollback(); st.error(f"Error: {e}")
 
-# (Management pages)
+# (Other management pages)
 elif st.session_state.page == 'customers':
-    st.header("Manage Customers")
+    st.header("Customers")
     for c in db.query(Customer).all():
-        c1, c2 = st.columns([5,1])
-        c1.write(f"**{c.name}** ({c.email})")
-        if c2.button("Delete", key=f"d_c_{c.id}"): db.delete(c); db.commit(); st.rerun()
+        st.write(f"- {c.name} ({c.email})")
 
 elif st.session_state.page == 'vehicles':
-    st.header("Manage Vehicles")
+    st.header("Vehicles")
     for v in db.query(Vehicle).all():
-        c1, c2 = st.columns([5,1])
-        c1.write(f"**{v.registration}** - {v.owner.name}")
-        if c2.button("Delete", key=f"d_v_{v.id}"): db.delete(v); db.commit(); st.rerun()
+        st.write(f"- {v.registration} ({v.owner.name})")
 
 elif st.session_state.page == 'garages':
-    st.header("Manage Garages")
+    st.header("Garages")
     for g in db.query(Garage).all():
-        c1, c2 = st.columns([5,1])
-        c1.write(f"**{g.name}**")
-        if c2.button("Delete", key=f"d_g_{g.id}"): db.delete(g); db.commit(); st.rerun()
+        st.write(f"- {g.name}")
 
 db.close()
