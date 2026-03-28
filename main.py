@@ -55,43 +55,66 @@ class Booking(Base):
 
 Base.metadata.create_all(engine)
 
-# --- EMAIL HELPER (DIAGNOSTIC & DUAL-PORT) ---
+# --- IMPROVED EMAIL HELPER (FOR RAILWAY) ---
 def send_confirmation_email(cust_email, cust_name, veh_reg, job, garage, date_obj, cost):
     try:
-        # Clean up secrets (Remove quotes/spaces)
+        # Pull and clean secrets
         s_user = str(st.secrets["emails"]["smtp_user"]).replace('"', '').replace(' ', '').strip()
         s_pass = str(st.secrets["emails"]["smtp_pass"]).replace('"', '').replace(' ', '').strip()
         s_server = str(st.secrets["emails"]["smtp_server"]).replace('"', '').replace(' ', '').strip()
         
         msg = MIMEMultipart()
-        msg['From'] = s_user
+        msg['From'] = f"VBS Pro <{s_user}>"
         msg['To'] = cust_email
         msg['Subject'] = f"Booking Confirmation: {veh_reg}"
-        body = f"Hello {cust_name},\n\nYour booking for {veh_reg} is confirmed.\n\nJob: {job}\nGarage: {garage}\nDate: {date_obj.strftime('%d %B %Y')}\nCost: £{cost:.2f}\n\nThank you for choosing VBS Pro!"
+        
+        body = f"Hello {cust_name},\n\nYour booking for {veh_reg} is confirmed.\n\nDetails:\n- Job: {job}\n- Garage: {garage}\n- Date: {date_obj}\n- Cost: £{cost:.2f}\n\nThank you!"
         msg.attach(MIMEText(body, 'plain'))
 
-        # TRY PORT 587 FIRST
+        # TRY PORT 465 (SSL) - This is usually MORE RELIABLE on Railway/Cloud
         try:
-            server = smtplib.SMTP(s_server, 587, timeout=10)
-            server.starttls()
-            server.login(s_user, s_pass)
-            server.send_message(msg)
-            server.quit()
-            return True
-        except Exception as e1:
-            # FALLBACK TO PORT 465
-            try:
-                server = smtplib.SMTP_SSL(s_server, 465, timeout=10)
+            with smtplib.SMTP_SSL(s_server, 465, timeout=15) as server:
                 server.login(s_user, s_pass)
                 server.send_message(msg)
-                server.quit()
+            return True
+        except Exception as ssl_err:
+            # FALLBACK TO PORT 587 (TLS)
+            try:
+                with smtplib.SMTP(s_server, 587, timeout=15) as server:
+                    server.starttls()
+                    server.login(s_user, s_pass)
+                    server.send_message(msg)
                 return True
-            except Exception as e2:
-                st.error(f"Email failed on all ports. Port 587: {e1} | Port 465: {e2}")
+            except Exception as tls_err:
+                st.error(f"❌ Email Failed. SSL Error: {ssl_err} | TLS Error: {tls_err}")
                 return False
-    except Exception as e_final:
-        st.error(f"General Email Error: {e_final}")
+    except Exception as e:
+        st.error(f"❌ Secrets Error: {e}. Check your Railway Variables.")
         return False
+
+# --- SIDEBAR WITH DIAGNOSTIC TOOL ---
+with st.sidebar:
+    st.title("🚗 VBS Pro")
+    if st.button("📊 Dashboard", use_container_width=True): nav('dashboard')
+    if st.button("👥 Customers", use_container_width=True): nav('customers')
+    if st.button("🚗 Vehicles", use_container_width=True): nav('vehicles')
+    if st.button("🛠️ Garages", use_container_width=True): nav('garages')
+    st.divider()
+    if st.button("➕ New Booking", type="primary", use_container_width=True): nav('new_booking')
+    
+    # NEW: EMAIL TESTER
+    st.divider()
+    st.write("**Diagnostics**")
+    if st.button("📧 Test Email Config"):
+        with st.spinner("Testing connection..."):
+            test_res = send_confirmation_email(
+                st.secrets["emails"]["smtp_user"], 
+                "Admin", "TEST-REG", "System Test", "Test Garage", "Today", 0.0
+            )
+            if test_res:
+                st.success("Test email sent to yourself!")
+            else:
+                st.error("Test failed. See red box above.")
 
 # --- UI CONFIG & CSS ---
 st.set_page_config(layout="wide", page_title="VBS Pro")
