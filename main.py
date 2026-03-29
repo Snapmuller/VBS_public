@@ -59,36 +59,46 @@ class Booking(Base):
 
 Base.metadata.create_all(engine)
 
-# --- EMAIL HELPER (USING OS.GETENV TO PREVENT CRASHES) ---
+# --- CLOUD-OPTIMIZED EMAIL HELPER ---
 def send_confirmation_email(cust_email, cust_name, veh_reg, job, garage, date_obj, cost):
-    # Railway Environment Variables
-    s_user = os.getenv("SMTP_USER")
-    s_pass = os.getenv("SMTP_PASS")
-    s_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    # Fetch and CLEAN the variables (remove quotes/spaces)
+    s_user = str(os.getenv("SMTP_USER", "")).replace('"', '').strip()
+    s_pass = str(os.getenv("SMTP_PASS", "")).replace('"', '').strip()
+    s_server = str(os.getenv("SMTP_SERVER", "smtp.gmail.com")).replace('"', '').strip()
     
     if not s_user or not s_pass:
-        st.error("⚠️ Email Configuration Missing in Railway Variables (SMTP_USER/SMTP_PASS).")
+        st.error("⚠️ Email variables are missing in Railway.")
         return False
     
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = f"VBS Pro <{s_user}>"
-        msg['To'] = cust_email
-        msg['Subject'] = f"Booking Confirmation: {veh_reg}"
-        
-        body = f"Hello {cust_name},\n\nYour booking for {veh_reg} is confirmed.\n\nDetails:\n- Job: {job}\n- Garage: {garage}\n- Date: {date_obj}\n- Cost: £{cost:.2f}\n\nThank you!"
-        msg.attach(MIMEText(body, 'plain'))
+    msg = MIMEMultipart()
+    msg['From'] = f"VBS Pro <{s_user}>"
+    msg['To'] = cust_email
+    msg['Subject'] = f"Booking Confirmation: {veh_reg}"
+    
+    body = f"Hello {cust_name},\n\nYour booking for {veh_reg} is confirmed.\n\nDetails:\n- Job: {job}\n- Garage: {garage}\n- Date: {date_obj}\n- Cost: £{cost:.2f}\n\nThank you!"
+    msg.attach(MIMEText(body, 'plain'))
 
-        # Standard secure connection for Gmail
-        with smtplib.SMTP_SSL(s_server, 465, timeout=15) as server:
+    # TRY PORT 587 (The Standard for Cloud/Railway)
+    try:
+        server = smtplib.SMTP(s_server, 587, timeout=20)
+        server.starttls()
+        server.login(s_user, s_pass)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e587:
+        # IF 587 FAILS, TRY 465 AS A BACKUP
+        try:
+            server = smtplib.SMTP_SSL(s_server, 465, timeout=20)
             server.login(s_user, s_pass)
             server.send_message(msg)
-        return True
-    except Exception as e:
-        st.error(f"❌ Email Failed: {str(e)}")
-        return False
+            server.quit()
+            return True
+        except Exception as e465:
+            st.error(f"❌ Email Blocked by Network. Error 587: {e587} | Error 465: {e465}")
+            return False
 
-# --- CSS STYLING (FIX FOR WHITE BOXES) ---
+# --- CSS STYLING ---
 st.markdown("""
     <style>
     div[data-testid="metric-container"], .stMetric {
@@ -123,10 +133,17 @@ with st.sidebar:
     
     st.divider()
     st.write("**System Status**")
-    if os.getenv("SMTP_USER"):
+    
+    # Clean the display user for the sidebar status
+    raw_user = os.getenv("SMTP_USER", "")
+    clean_user = str(raw_user).replace('"', '').strip()
+    
+    if clean_user:
         st.success("✅ Email Active")
         if st.button("📧 Send Test Email"):
-            send_confirmation_email(os.getenv("SMTP_USER"), "Admin", "TEST", "Test", "Garage", "Today", 0)
+            # Test sending to yourself
+            if send_confirmation_email(clean_user, "Admin", "TEST-123", "Diagnostic Test", "System Garage", "Today", 0.0):
+                st.success("Test email sent!")
     else:
         st.error("❌ Email Inactive")
 
